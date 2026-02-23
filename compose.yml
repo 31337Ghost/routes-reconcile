@@ -1,0 +1,17 @@
+services:
+  route-reconcile:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: route-reconcile
+    restart: unless-stopped
+    environment:
+      MT_HOST: ${MT_HOST}
+      MT_USER: ${MT_USER}
+      MT_PASS: ${MT_PASS}
+      MT_USE_SSL: ${MT_USE_SSL:-true}
+      MT_SSL_VERIFY: ${MT_SSL_VERIFY:-false}
+      MT_PORT: ${MT_PORT:-8729}
+      MT_WG_GW: ${MT_WG_GW:-wg0}
+      MT_DOMAINS: ${MT_DOMAINS:-}
+      MT_DRY_RUN: ${MT_DRY_RUN:-false}

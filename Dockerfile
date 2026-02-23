@@ -8,7 +8,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-RUN apk add --no-cache ca-certificates curl bind-tools
+RUN apk add --no-cache ca-certificates curl bind-tools libc6-compat
 
 RUN case "${TARGETARCH}" in \
         amd64) arch="amd64" ;; \
@@ -16,7 +16,8 @@ RUN case "${TARGETARCH}" in \
         *) echo "Unsupported architecture: ${TARGETARCH}" && exit 1 ;; \
     esac \
     && curl -fsSLo /usr/local/bin/supercronic "https://github.com/aptible/supercronic/releases/download/${SUPERCRONIC_VERSION}/supercronic-linux-${arch}" \
-    && chmod +x /usr/local/bin/supercronic
+    && chmod +x /usr/local/bin/supercronic \
+    && /usr/local/bin/supercronic -version
 
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
@@ -24,4 +25,4 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY main.py ./
 COPY crontab /etc/crontab
 
-CMD ["supercronic", "/etc/crontab"]
+CMD ["/usr/local/bin/supercronic", "/etc/crontab"]

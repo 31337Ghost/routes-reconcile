@@ -1,9 +1,7 @@
 services:
   route-reconcile:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    container_name: route-reconcile
+    image: ghcr.io/31337ghost/routes-reconcile:latest
+    container_name: routes-reconcile
     restart: unless-stopped
     environment:
       MT_HOST: ${MT_HOST}

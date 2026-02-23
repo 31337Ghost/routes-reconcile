@@ -1,21 +1,46 @@
 # routes-reconcile
 
-Скрипт синхронизирует маршруты на MikroTik для списка доменов (OpenAI/ChatGPT):
+[![Docker Publish](https://github.com/31337Ghost/routes-reconcile/actions/workflows/docker-publish.yml/badge.svg)](https://github.com/31337Ghost/routes-reconcile/actions/workflows/docker-publish.yml)
+[![GHCR](https://img.shields.io/badge/GHCR-packages-blue)](https://github.com/31337Ghost/routes-reconcile/pkgs/container/routes-reconcile)
+[![Platforms](https://img.shields.io/badge/platform-amd64%20%7C%20arm64-informational)](https://github.com/31337Ghost/routes-reconcile/actions/workflows/docker-publish.yml)
+[![Python](https://img.shields.io/badge/python-3.12-blue.svg)](https://www.python.org/)
+
+Сервис синхронизирует маршруты на MikroTik для доменов OpenAI/ChatGPT.
+
+Что делает:
 - резолвит `A`-записи доменов;
 - добавляет отсутствующие `/32` маршруты через заданный gateway/interface;
-- удаляет только свои устаревшие маршруты (по префиксу комментария `openai:`).
+- удаляет только свои устаревшие маршруты (по комментарию `openai:*`);
+- запускается по cron каждые 30 минут через `supercronic`.
 
-В Docker используется `supercronic`, запуск по cron: каждые 30 минут.
-Базовый образ: `python:3.12-alpine`.
+База образа: `python:3.12-alpine`.
 
-## Файлы
+## Quick Start
 
-- `main.py` — основная логика синхронизации.
-- `requirements.txt` — Python-зависимости.
-- `Dockerfile` — образ приложения + `supercronic` + `dig`.
-- `crontab` — расписание (`*/30 * * * *`).
-- `compose.yml` — запуск через Docker Compose.
-- `.env.example` — пример переменных окружения.
+1. Скопировать пример:
+
+```bash
+cp .env.example .env
+```
+
+2. Заполнить `MT_HOST`, `MT_USER`, `MT_PASS` в `.env`.
+
+3. Запустить:
+
+```bash
+docker compose -f compose.yml up -d --build
+```
+
+4. Проверить логи:
+
+```bash
+docker compose -f compose.yml logs -f route-reconcile
+```
+
+## Репозиторий и образ
+
+- Репозиторий: [github.com/31337Ghost/routes-reconcile](https://github.com/31337Ghost/routes-reconcile)
+- GHCR package: [ghcr.io/31337ghost/routes-reconcile](https://github.com/31337Ghost/routes-reconcile/pkgs/container/routes-reconcile)
 
 ## Переменные окружения
 
@@ -46,7 +71,7 @@ MT_DOMAINS=api.openai.com,chat.openai.com,auth.openai.com,platform.openai.com,ch
 MT_DRY_RUN=true
 ```
 
-## Локальный запуск (разработка)
+## Локальная разработка
 
 ```bash
 cd /Users/golovinps/PycharmProjects/routes-reconcile
@@ -56,9 +81,9 @@ pip install -r requirements.txt
 python main.py
 ```
 
-`python-dotenv` подхватит `.env` автоматически, если файл существует.
+`python-dotenv` подхватывает `.env`, если файл существует.
 
-## Запуск в Docker Compose
+## Docker Compose
 
 1. Подготовить переменные окружения в shell или через `.env` для Docker Compose.
 2. Запустить:
@@ -79,25 +104,7 @@ docker compose -f compose.yml logs -f route-reconcile
 docker compose -f compose.yml down
 ```
 
-## Публикация образа в GHCR
-
-Добавлен workflow: `/Users/golovinps/PycharmProjects/routes-reconcile/.github/workflows/docker-publish.yml`.
-
-Он собирает и пушит multi-arch образ в GHCR:
-- `linux/amd64`
-- `linux/arm64`
-
-Триггеры:
-- push в `main`;
-- push тега `v*` (например, `v1.0.0`);
-- ручной запуск (`workflow_dispatch`).
-
-Теги образа:
-- `latest` (только для default branch);
-- `sha-<commit>`;
-- тег git-релиза (например, `v1.0.0`).
-
-## Как работает cron
+## Cron
 
 В контейнере стартует `supercronic` и читает `crontab`:
 
@@ -117,6 +124,15 @@ MT_DRY_RUN=true
 
 В логах будет план (`add/delete`) без реальных изменений на MikroTik.
 
+## Файлы проекта
+
+- `main.py` — логика синхронизации.
+- `requirements.txt` — Python-зависимости.
+- `Dockerfile` — образ + `supercronic` + `dig`.
+- `crontab` — расписание (`*/30 * * * *`).
+- `compose.yml` — запуск через Docker Compose.
+- `.env.example` — пример переменных окружения.
+
 ## Troubleshooting
 
 ### `[Errno 61] Connection refused`
@@ -132,8 +148,3 @@ MT_DRY_RUN=true
 Варианты:
 - временно переключиться на обычный API: `MT_USE_SSL=false`, `MT_PORT=8728`;
 - настроить сертификат для `api-ssl` и вернуть `8729`.
-
-### Повторные добавления маршрутов
-
-Скрипт сверяет `dst-address` со всеми текущими маршрутами и не должен дублировать существующие. 
-Если видите повторные `add`, приложите логи со строками `all_routes`/`managed_routes`.

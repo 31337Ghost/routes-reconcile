@@ -13,3 +13,6 @@ services:
       MT_WG_GW: ${MT_WG_GW:-wg0}
       MT_DOMAINS: ${MT_DOMAINS:-}
       MT_DRY_RUN: ${MT_DRY_RUN:-false}
+      MT_STALE_AFTER_HOURS: ${MT_STALE_AFTER_HOURS:-48}
+    volumes:
+      - ./.state:/state

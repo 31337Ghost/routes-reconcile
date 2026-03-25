@@ -10,7 +10,7 @@
 Что делает:
 - резолвит `A`-записи доменов;
 - добавляет отсутствующие `/32` маршруты через заданный gateway/interface;
-- удаляет только свои устаревшие маршруты (по комментарию `openai:*`);
+- удаляет только свои устаревшие маршруты после grace period (по умолчанию 48 часов);
 - запускается по cron каждые 30 минут через `supercronic`.
 
 База образа: `python:3.12-alpine`.
@@ -56,6 +56,7 @@ docker compose -f compose.yml logs -f route-reconcile
 - `MT_WG_GW` — gateway/interface для маршрутов (по умолчанию `wg0`).
 - `MT_DOMAINS` — домены через запятую.
 - `MT_DRY_RUN` — `true|false` (если `true`, изменения не применяются).
+- `MT_STALE_AFTER_HOURS` — через сколько часов отсутствия IP в DNS разрешено удалить маршрут (по умолчанию `48`).
 
 Пример (`.env`):
 
@@ -69,6 +70,7 @@ MT_PORT=8729
 MT_WG_GW=wg0
 MT_DOMAINS=api.openai.com,chat.openai.com,auth.openai.com,platform.openai.com,chatgpt.com,ios.chat.openai.com
 MT_DRY_RUN=true
+MT_STALE_AFTER_HOURS=48
 ```
 
 ## Локальная разработка
@@ -104,6 +106,8 @@ docker compose -f compose.yml logs -f route-reconcile
 docker compose -f compose.yml down
 ```
 
+Compose по умолчанию монтирует `./.state` в контейнер как `/state`, а state-файл хранится по пути `/state/routes-reconcile-state.json`, поэтому grace period переживает recreate/redeploy контейнера.
+
 ## Cron
 
 В контейнере стартует `supercronic` и читает `crontab`:
@@ -123,6 +127,22 @@ MT_DRY_RUN=true
 ```
 
 В логах будет план (`add/delete`) без реальных изменений на MikroTik.
+
+## State И Grace Period
+
+Для managed-маршрутов сервис хранит время последнего наблюдения IP в локальном JSON-файле:
+
+```json
+{
+  "104.18.33.45/32": "2026-03-25T10:00:00Z"
+}
+```
+
+Комментарий на MikroTik остается простым, в формате `openai:<domain>`.
+
+Если домен временно вернул другую пару адресов, старые маршруты не удаляются сразу. Они будут удалены только если IP не появлялся в DNS дольше, чем `MT_STALE_AFTER_HOURS`.
+
+Если state-файл поврежден или временно не читается, сервис не удаляет managed-маршруты в этом запуске. Это fail-safe поведение: лучше временно пропустить cleanup, чем удалить маршруты из-за битого state.
 
 ## Файлы проекта
 

@@ -1,2 +1,4 @@
 .env
 .idea
+.state/
+__pycache__/

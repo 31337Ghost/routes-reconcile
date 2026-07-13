@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
+import ipaddress
 import json
 import os
 import re
 import subprocess
 import traceback
+import urllib.parse
+import urllib.request
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Dict, List, Set, Tuple
@@ -45,29 +48,128 @@ DEFAULT_DOMAINS = [
 
 IPV4_RE = re.compile(r"^(\d{1,3}\.){3}\d{1,3}$")
 
+# Cloudflare's authoritative DNS returns region-specific endpoints (e.g. dedicated
+# 8.6.112.x / 8.47.69.x addresses for RU client subnets), so the local resolver
+# alone never sees them. Query extra resolvers plus Google DoH with EDNS Client
+# Subnet from several RU networks and take the union of all answers.
+DEFAULT_RESOLVERS = ["8.8.8.8", "1.1.1.1"]
+DEFAULT_ECS_SUBNETS = [
+    "77.88.8.0/24",     # Yandex
+    "178.176.0.0/24",   # MTS
+    "85.26.128.0/24",   # Beeline
+    "31.173.0.0/24",    # Megafon
+    "213.59.0.0/24",    # Rostelecom
+]
+
+
+def env_list(name: str, default: List[str]) -> List[str]:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    items = [item.strip() for item in value.split(",")]
+    return [item for item in items if item]
+
 
 def env_domains() -> List[str]:
-    value = os.getenv("MT_DOMAINS", "")
-    if not value.strip():
-        return DEFAULT_DOMAINS
-    domains = [item.strip() for item in value.split(",")]
-    return [item for item in domains if item]
+    return env_list("MT_DOMAINS", DEFAULT_DOMAINS)
 
 
 DOMAINS = env_domains()
+RESOLVERS = env_list("MT_RESOLVERS", DEFAULT_RESOLVERS)
+ECS_SUBNETS = env_list("MT_ECS_SUBNETS", DEFAULT_ECS_SUBNETS)
+
+# DNS rotates individual addresses inside the announced network (8.6.112.6 today,
+# 8.6.112.0 tomorrow), so route the whole announced BGP prefix instead of chasing
+# /32s. Prefixes broader than MT_EXPAND_MIN_PREFIXLEN stay as /32 to avoid
+# tunneling huge shared ranges.
+EXPAND_PREFIXES = env_bool("MT_EXPAND_PREFIXES", True)
+EXPAND_MIN_PREFIXLEN = int(os.getenv("MT_EXPAND_MIN_PREFIXLEN", "24"))
 
 
-def dig_a(domain: str) -> List[str]:
-    print(f"[dns] resolve A for {domain}")
-    out = subprocess.check_output(["dig", "+short", "A", domain], text=True, timeout=10)
+def dig_a(domain: str, server: str | None = None) -> List[str]:
+    cmd = ["dig", "+short", "A", domain]
+    if server:
+        cmd.append(f"@{server}")
+    out = subprocess.check_output(cmd, text=True, timeout=10)
     ips = []
     for line in out.splitlines():
         line = line.strip()
         if IPV4_RE.match(line):
             ips.append(line)
-    uniq_ips = sorted(set(ips))
+    return sorted(set(ips))
+
+
+def doh_a(domain: str, ecs_subnet: str) -> List[str]:
+    query = urllib.parse.urlencode(
+        {"name": domain, "type": "A", "edns_client_subnet": ecs_subnet}
+    )
+    url = f"https://dns.google/resolve?{query}"
+    with urllib.request.urlopen(url, timeout=10) as resp:
+        payload = json.loads(resp.read().decode())
+    ips = []
+    for answer in payload.get("Answer", []):
+        data = str(answer.get("data", "")).strip()
+        if IPV4_RE.match(data):
+            ips.append(data)
+    return sorted(set(ips))
+
+
+def resolve_a(domain: str) -> List[str]:
+    print(f"[dns] resolve A for {domain}")
+    ips: Set[str] = set()
+    sources: List[tuple[str, callable]] = [("system", lambda: dig_a(domain))]
+    for server in RESOLVERS:
+        sources.append((f"@{server}", lambda server=server: dig_a(domain, server)))
+    for subnet in ECS_SUBNETS:
+        sources.append((f"doh+ecs={subnet}", lambda subnet=subnet: doh_a(domain, subnet)))
+
+    for label, fetch in sources:
+        try:
+            found = fetch()
+        except Exception as exc:
+            print(f"[dns] {domain} via {label}: failed ({exc})")
+            continue
+        new = sorted(set(found) - ips)
+        if new:
+            print(f"[dns] {domain} via {label}: +{', '.join(new)}")
+        ips.update(found)
+
+    uniq_ips = sorted(ips)
     print(f"[dns] {domain} -> {', '.join(uniq_ips) if uniq_ips else 'no A records'}")
     return uniq_ips
+
+
+_prefix_cache: Dict[str, str | None] = {}
+
+
+def announced_prefix(ip: str) -> str | None:
+    if ip in _prefix_cache:
+        return _prefix_cache[ip]
+    prefix: str | None = None
+    try:
+        query = urllib.parse.urlencode({"resource": ip})
+        url = f"https://stat.ripe.net/data/network-info/data.json?{query}"
+        with urllib.request.urlopen(url, timeout=10) as resp:
+            payload = json.loads(resp.read().decode())
+        candidate = str(payload.get("data", {}).get("prefix", "")).strip()
+        network = ipaddress.ip_network(candidate)
+        if isinstance(network, ipaddress.IPv4Network):
+            prefix = str(network)
+    except Exception as exc:
+        print(f"[bgp] {ip}: prefix lookup failed ({exc})")
+    _prefix_cache[ip] = prefix
+    return prefix
+
+
+def route_dst(ip: str) -> str:
+    if EXPAND_PREFIXES:
+        prefix = announced_prefix(ip)
+        if prefix is not None:
+            if ipaddress.ip_network(prefix).prefixlen >= EXPAND_MIN_PREFIXLEN:
+                print(f"[bgp] {ip} -> {prefix}")
+                return prefix
+            print(f"[bgp] {ip}: announced prefix {prefix} too broad, keeping /32")
+    return f"{ip}/32"
 
 
 def utc_now() -> datetime:
@@ -118,8 +220,8 @@ def desired() -> Dict[str, str]:
     # dst-address -> comment
     want: Dict[str, str] = {}
     for d in DOMAINS:
-        for ip in dig_a(d):
-            want[f"{ip}/32"] = f"{COMMENT_PREFIX}{d}"
+        for ip in resolve_a(d):
+            want[route_dst(ip)] = f"{COMMENT_PREFIX}{d}"
     return want
 
 
@@ -140,6 +242,8 @@ def main():
         f"ssl_verify={MT_SSL_VERIFY}"
     )
     print(f"[startup] domains={', '.join(DOMAINS)}")
+    print(f"[startup] resolvers=system,{','.join(RESOLVERS)} ecs_subnets={','.join(ECS_SUBNETS)}")
+    print(f"[startup] expand_prefixes={EXPAND_PREFIXES} expand_min_prefixlen={EXPAND_MIN_PREFIXLEN}")
     now = utc_now()
     stale_before = now - timedelta(hours=STALE_AFTER_HOURS)
     want = desired()

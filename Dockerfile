@@ -25,4 +25,6 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY main.py ./
 COPY crontab /etc/crontab
 
-CMD ["/usr/local/bin/supercronic", "/etc/crontab"]
+# Run one sync immediately on container start (failure is non-fatal),
+# then hand over to supercronic for the regular schedule.
+CMD ["sh", "-c", "python /app/main.py; exec /usr/local/bin/supercronic /etc/crontab"]

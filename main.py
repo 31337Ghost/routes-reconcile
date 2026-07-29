@@ -225,6 +225,15 @@ def desired() -> Dict[str, str]:
     return want
 
 
+def managed_route_updates(route: dict, desired_comment: str, desired_gateway: str) -> Dict[str, str]:
+    updates: Dict[str, str] = {}
+    if route.get("comment") != desired_comment:
+        updates["comment"] = desired_comment
+    if route.get("gateway") != desired_gateway:
+        updates["gateway"] = desired_gateway
+    return updates
+
+
 def main():
     missing = [name for name, val in {"MT_HOST": MT_HOST, "MT_USER": MT_USER, "MT_PASS": MT_PASS}.items() if not val]
     if missing:
@@ -315,20 +324,21 @@ def main():
             if dst:
                 current_by_dst.setdefault(dst, []).append(r)
 
-        # 2) Normalize comments for currently observed IPs.
-        to_update: List[tuple[str, str]] = []
+        # 2) Normalize comments and gateway/interface for currently observed routes.
+        to_update: List[tuple[str, Dict[str, str]]] = []
         for dst in sorted(want_dst):
             items = current_by_dst.get(dst, [])
             if not items:
                 continue
             desired_comment = want[dst]
             for it in items:
-                if it.get("comment") != desired_comment:
-                    to_update.append((it["id"], desired_comment))
+                updates = managed_route_updates(it, desired_comment, WG_GATEWAY)
+                if updates:
+                    to_update.append((it["id"], updates))
 
         if not DRY_RUN:
-            for rid, comment in to_update:
-                routes.set(id=rid, comment=comment)
+            for rid, updates in to_update:
+                routes.set(id=rid, **updates)
 
         # 3) DELETE obsolete + duplicates, but only after grace period from local state.
         to_delete_ids: List[str] = []

@@ -225,13 +225,28 @@ def desired() -> Dict[str, str]:
     return want
 
 
-def managed_route_updates(route: dict, desired_comment: str, desired_gateway: str) -> Dict[str, str]:
+def managed_route_updates(
+    route: dict, desired_comment: str | None, desired_gateway: str
+) -> Dict[str, str]:
     updates: Dict[str, str] = {}
-    if route.get("comment") != desired_comment:
+    if desired_comment is not None and route.get("comment") != desired_comment:
         updates["comment"] = desired_comment
     if route.get("gateway") != desired_gateway:
         updates["gateway"] = desired_gateway
     return updates
+
+
+def plan_managed_route_updates(
+    existing: List[dict], desired_comments: Dict[str, str], desired_gateway: str
+) -> List[tuple[str, Dict[str, str]]]:
+    planned: List[tuple[str, Dict[str, str]]] = []
+    for route in existing:
+        dst = route.get("dst-address")
+        desired_comment = desired_comments.get(dst) if dst else None
+        updates = managed_route_updates(route, desired_comment, desired_gateway)
+        if updates:
+            planned.append((route["id"], updates))
+    return planned
 
 
 def main():
@@ -324,17 +339,10 @@ def main():
             if dst:
                 current_by_dst.setdefault(dst, []).append(r)
 
-        # 2) Normalize comments and gateway/interface for currently observed routes.
-        to_update: List[tuple[str, Dict[str, str]]] = []
-        for dst in sorted(want_dst):
-            items = current_by_dst.get(dst, [])
-            if not items:
-                continue
-            desired_comment = want[dst]
-            for it in items:
-                updates = managed_route_updates(it, desired_comment, WG_GATEWAY)
-                if updates:
-                    to_update.append((it["id"], updates))
+        # 2) Normalize the gateway/interface for every managed route, including
+        # routes currently retained only by the stale-route grace period. Comments
+        # can be normalized only for destinations present in the current DNS set.
+        to_update = plan_managed_route_updates(existing, want, WG_GATEWAY)
 
         if not DRY_RUN:
             for rid, updates in to_update:
